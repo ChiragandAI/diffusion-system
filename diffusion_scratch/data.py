@@ -1,6 +1,6 @@
 import random
 from torch.utils.data import Dataset
-from torchvision.datasets import CIFAR10, STL10
+from torchvision.datasets import CIFAR10, STL10, CocoCaptions
 from torchvision import transforms
 
 
@@ -86,10 +86,56 @@ class STL10TextDataset(Dataset):
         return image, caption
 
 
-def build_text_dataset(name: str, root: str, image_size: int):
+def build_text_dataset(name: str, root: str, image_size: int, coco_split: str = "train"):
     dataset_name = name.lower().strip()
+    if dataset_name == "coco":
+        return COCOCaptionTextDataset(root=root, split=coco_split, image_size=image_size)
     if dataset_name == "stl10":
         return STL10TextDataset(root=root, split="train", image_size=image_size)
     if dataset_name == "cifar10":
         return CIFAR10TextDataset(root=root, train=True, image_size=image_size)
-    raise ValueError(f"Unsupported dataset: {name}. Use 'stl10' or 'cifar10'.")
+    raise ValueError(f"Unsupported dataset: {name}. Use 'coco', 'stl10', or 'cifar10'.")
+
+
+class COCOCaptionTextDataset(Dataset):
+    """COCO captions dataset with random caption sampling per image."""
+
+    def __init__(self, root: str = "./data", split: str = "train", image_size: int = 64):
+        if split not in {"train", "val"}:
+            raise ValueError("split must be 'train' or 'val'")
+
+        image_dir = f"{root}/{split}2017"
+        annotation_file = f"{root}/annotations/captions_{split}2017.json"
+
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+
+        try:
+            self.ds = CocoCaptions(
+                root=image_dir,
+                annFile=annotation_file,
+                transform=self.transform,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "COCO dataset not found. Place files at:\n"
+                f"- {image_dir}\n"
+                f"- {annotation_file}\n"
+                "Expected files include train2017.zip and annotations_trainval2017.zip extracted under data/."
+            ) from exc
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx: int):
+        image, captions = self.ds[idx]
+        if not captions:
+            caption = "a photo"
+        else:
+            caption = random.choice(captions).strip().lower()
+        return image, caption

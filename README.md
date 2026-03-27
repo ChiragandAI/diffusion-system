@@ -7,7 +7,7 @@ It includes:
 - Small conditional U-Net noise predictor
 - DDPM forward/reverse process implementation
 - Classifier-free guidance (CFG)
-- Training on STL-10 (default) or CIFAR-10 with auto-generated text prompts
+- Training on COCO captions (default), with optional STL-10/CIFAR-10
 
 ## 1) Install
 
@@ -18,7 +18,7 @@ pip install -r requirements.txt
 ## 2) Train
 
 ```bash
-python train.py --dataset stl10 --epochs 20 --batch_size 32 --timesteps 300 --image_size 64 --num_workers 2
+python train.py --dataset coco --coco_split train --epochs 10 --batch_size 32 --timesteps 300 --image_size 64 --num_workers 2
 ```
 
 Artifacts:

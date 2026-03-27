@@ -14,8 +14,9 @@ from diffusion_scratch.unet import TinyConditionalUNet
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train a tiny text-to-image diffusion model from scratch.")
-    p.add_argument("--dataset", type=str, default="stl10", choices=["stl10", "cifar10"])
-    p.add_argument("--epochs", type=int, default=20)
+    p.add_argument("--dataset", type=str, default="coco", choices=["coco", "stl10", "cifar10"])
+    p.add_argument("--coco_split", type=str, default="train", choices=["train", "val"])
+    p.add_argument("--epochs", type=int, default=10)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--timesteps", type=int, default=300)
@@ -36,7 +37,12 @@ def main():
     device = args.device
     tokenizer = CharTokenizer(max_length=48)
 
-    dataset = build_text_dataset(name=args.dataset, root=args.data_dir, image_size=args.image_size)
+    dataset = build_text_dataset(
+        name=args.dataset,
+        root=args.data_dir,
+        image_size=args.image_size,
+        coco_split=args.coco_split,
+    )
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -99,6 +105,7 @@ def main():
             "unet": unet.state_dict(),
             "text_encoder": text_encoder.state_dict(),
             "dataset": args.dataset,
+            "coco_split": args.coco_split,
             "timesteps": args.timesteps,
             "image_size": args.image_size,
             "tokenizer_max_length": tokenizer.max_length,
