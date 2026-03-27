@@ -7,7 +7,7 @@ It includes:
 - Small conditional U-Net noise predictor
 - DDPM forward/reverse process implementation
 - Classifier-free guidance (CFG)
-- Training on CIFAR-10 with auto-generated text prompts
+- Training on STL-10 (default) or CIFAR-10 with auto-generated text prompts
 
 ## 1) Install
 
@@ -18,7 +18,7 @@ pip install -r requirements.txt
 ## 2) Train
 
 ```bash
-python train.py --epochs 20 --batch_size 64 --timesteps 300 --num_workers 2
+python train.py --dataset stl10 --epochs 20 --batch_size 32 --timesteps 300 --image_size 64 --num_workers 2
 ```
 
 Artifacts:
@@ -28,7 +28,7 @@ Artifacts:
 ## 3) Generate from text
 
 ```bash
-python sample.py --checkpoint outputs/last.pt --prompts "a photo of a cat" "a photo of a ship" --output outputs/generated.png
+python sample.py --checkpoint outputs/last.pt --prompts "a photo of a cat" "a photo of a ship" "a photo of a dog" "a photo of a truck" "a photo of an airplane" --output outputs/generated.png
 ```
 
 ## Colab Quick Confirm

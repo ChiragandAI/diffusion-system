@@ -26,7 +26,7 @@ Expected output includes tensor shapes for input/noisy/predicted noise.
 ## 4) Training (Colab-Friendly)
 
 ```bash
-python train.py --epochs 1 --batch_size 32 --timesteps 100 --num_workers 2 --sample_every 1 --device cuda
+python train.py --dataset stl10 --epochs 1 --batch_size 32 --timesteps 150 --image_size 64 --num_workers 2 --sample_every 1 --device cuda
 ```
 
 This writes:
@@ -38,7 +38,7 @@ This writes:
 ```bash
 python sample.py \
   --checkpoint outputs/last.pt \
-  --prompts "a photo of a cat" "a photo of a ship" "a photo of a truck" \
+  --prompts "a photo of a cat" "a photo of a ship" "a photo of a dog" "a photo of a truck" "a photo of an airplane" \
   --output outputs/generated.png \
   --device cuda
 ```

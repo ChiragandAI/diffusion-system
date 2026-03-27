@@ -6,7 +6,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image, make_grid
 
-from diffusion_scratch.data import CIFAR10TextDataset
+from diffusion_scratch.data import build_text_dataset
 from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddpm
 from diffusion_scratch.text_encoder import CharTokenizer, TinyTextEncoder
 from diffusion_scratch.unet import TinyConditionalUNet
@@ -14,11 +14,12 @@ from diffusion_scratch.unet import TinyConditionalUNet
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train a tiny text-to-image diffusion model from scratch.")
+    p.add_argument("--dataset", type=str, default="stl10", choices=["stl10", "cifar10"])
     p.add_argument("--epochs", type=int, default=20)
-    p.add_argument("--batch_size", type=int, default=64)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--timesteps", type=int, default=300)
-    p.add_argument("--image_size", type=int, default=32)
+    p.add_argument("--image_size", type=int, default=64)
     p.add_argument("--data_dir", type=str, default="./data")
     p.add_argument("--output_dir", type=str, default="./outputs")
     p.add_argument("--num_workers", type=int, default=2)
@@ -35,7 +36,7 @@ def main():
     device = args.device
     tokenizer = CharTokenizer(max_length=48)
 
-    dataset = CIFAR10TextDataset(root=args.data_dir, train=True, image_size=args.image_size)
+    dataset = build_text_dataset(name=args.dataset, root=args.data_dir, image_size=args.image_size)
     loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
@@ -56,6 +57,7 @@ def main():
         "a photo of a ship",
         "a photo of a dog",
         "a photo of a truck",
+        "a photo of an airplane",
     ]
 
     global_step = 0
@@ -96,6 +98,7 @@ def main():
         ckpt = {
             "unet": unet.state_dict(),
             "text_encoder": text_encoder.state_dict(),
+            "dataset": args.dataset,
             "timesteps": args.timesteps,
             "image_size": args.image_size,
             "tokenizer_max_length": tokenizer.max_length,
@@ -115,7 +118,7 @@ def main():
                 cfg_scale=5.0,
                 device=device,
             )
-            grid = make_grid(sampled, nrow=2)
+            grid = make_grid(sampled, nrow=min(3, len(preview_prompts)))
             save_image(grid, os.path.join(args.output_dir, f"sample_epoch_{epoch:03d}.png"))
 
     print("training finished")
