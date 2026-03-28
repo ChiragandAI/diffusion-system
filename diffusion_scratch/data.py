@@ -97,6 +97,17 @@ def build_text_dataset(name: str, root: str, image_size: int, coco_split: str = 
     raise ValueError(f"Unsupported dataset: {name}. Use 'coco', 'stl10', or 'cifar10'.")
 
 
+def build_val_text_dataset(name: str, root: str, image_size: int):
+    dataset_name = name.lower().strip()
+    if dataset_name == "coco":
+        return COCOCaptionTextDataset(root=root, split="val", image_size=image_size)
+    if dataset_name == "stl10":
+        return STL10TextDataset(root=root, split="test", image_size=image_size)
+    if dataset_name == "cifar10":
+        return CIFAR10TextDataset(root=root, train=False, image_size=image_size)
+    raise ValueError(f"Unsupported dataset: {name}. Use 'coco', 'stl10', or 'cifar10'.")
+
+
 class COCOCaptionTextDataset(Dataset):
     """COCO captions dataset with random caption sampling per image."""
 

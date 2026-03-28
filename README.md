@@ -8,6 +8,8 @@ It includes:
 - DDPM forward/reverse process implementation
 - Classifier-free guidance (CFG)
 - Training on COCO captions (default), with optional STL-10/CIFAR-10
+- Per-epoch validation evaluation and loss curve tracking
+- Per-epoch timestamped sample generations, checkpoints, and metrics logs
 
 ## 1) Install
 
@@ -23,7 +25,10 @@ python train.py --dataset coco --coco_split train --epochs 10 --batch_size 32 --
 
 Artifacts:
 - `outputs/last.pt` checkpoint
-- `outputs/sample_epoch_XXX.png` preview generations
+- `outputs/ckpt_<run_timestamp>_epoch_XXX_<timestamp>.pt`
+- `outputs/sample_<run_timestamp>_epoch_XXX_<timestamp>.png`
+- `outputs/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png`
+- `outputs/metrics_<run_timestamp>.csv`
 
 ## 3) Generate from text
 

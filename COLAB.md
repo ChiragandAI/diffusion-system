@@ -45,7 +45,9 @@ python train.py --dataset coco --coco_split train --epochs 10 --batch_size 32 --
 
 This writes:
 - `outputs/last.pt`
-- `outputs/sample_epoch_010.png` (and intermediate previews)
+- `outputs/sample_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
+- `outputs/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
+- `outputs/metrics_<run_timestamp>.csv` with train and val loss history
 
 ## 6) Inference (5 Prompts)
 
