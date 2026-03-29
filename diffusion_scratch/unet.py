@@ -32,13 +32,18 @@ class FiLMResBlock(nn.Module):
         self.norm2 = nn.GroupNorm(_num_groups(out_ch), out_ch)
         self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
         self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
-        self.cond_proj = nn.Linear(cond_dim, out_ch * 4)
+        # First FiLM is applied before conv1 (in_ch), second before conv2 (out_ch).
+        self.cond_proj = nn.Linear(cond_dim, (2 * in_ch) + (2 * out_ch))
         self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
         self.act = nn.SiLU()
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         film = self.cond_proj(cond)
-        s1, b1, s2, b2 = film.chunk(4, dim=-1)
+        s1, b1, s2, b2 = torch.split(
+            film,
+            [self.conv1.in_channels, self.conv1.in_channels, self.conv2.in_channels, self.conv2.in_channels],
+            dim=-1,
+        )
 
         h = self.norm1(x)
         h = h * (1 + s1.unsqueeze(-1).unsqueeze(-1)) + b1.unsqueeze(-1).unsqueeze(-1)
