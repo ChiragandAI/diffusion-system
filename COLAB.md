@@ -37,10 +37,10 @@ python test.py
 
 Expected output includes tensor shapes for input/noisy/predicted noise.
 
-## 5) Training (COCO, 10 epochs)
+## 5) Training (COCO, Better Defaults)
 
 ```bash
-python train.py --dataset coco --coco_split train --epochs 10 --batch_size 32 --timesteps 200 --image_size 64 --num_workers 2 --sample_every 2 --device cuda
+python train.py --dataset coco --coco_split train --epochs 40 --batch_size 32 --val_batch_size 32 --timesteps 400 --image_size 64 --num_workers 8 --lr 1e-4 --device cuda --amp --compile_model --channels_last
 ```
 
 This writes:
@@ -55,8 +55,10 @@ This writes:
 python sample.py \
   --checkpoint outputs/last.pt \
   --prompts "a photo of a cat" "a photo of a ship" "a photo of a dog" "a photo of a truck" "a photo of an airplane" \
+  --cfg_scale 6.0 \
   --output outputs/generated.png \
-  --device cuda
+  --device cuda \
+  --amp --channels_last
 ```
 
 ## 7) Download Artifacts
@@ -68,7 +70,7 @@ From the left file panel in Colab, download:
 ## 8) Resume Training Later
 
 ```bash
-python train.py --dataset coco --epochs 20 --resume_checkpoint outputs/last.pt --device cuda
+python train.py --dataset coco --epochs 60 --resume_checkpoint outputs/last.pt --device cuda --amp --compile_model --channels_last
 ```
 
-If the checkpoint already completed 10 epochs, this continues from epoch 11 to 20.
+If the checkpoint already completed 40 epochs, this continues from epoch 41 to 60.

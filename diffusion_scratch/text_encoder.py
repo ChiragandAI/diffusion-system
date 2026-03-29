@@ -21,18 +21,21 @@ class CharTokenizer:
     def encode(self, text: str) -> torch.Tensor:
         text = text.lower().strip()
         ids = [self.stoi.get(ch, self.stoi[self.unk_token]) for ch in text][: self.max_length]
+        if len(ids) == 0:
+            ids = [self.stoi[self.unk_token]]
         if len(ids) < self.max_length:
             ids = ids + [self.stoi[self.pad_token]] * (self.max_length - len(ids))
         return torch.tensor(ids, dtype=torch.long)
 
 
 class TinyTextEncoder(nn.Module):
-    """Token embedding + GRU pooled embedding."""
+    """Token embedding + BiGRU + attention pooling for stronger prompt representations."""
 
-    def __init__(self, vocab_size: int, emb_dim: int = 128, hidden_dim: int = 256):
+    def __init__(self, vocab_size: int, emb_dim: int = 192, hidden_dim: int = 384):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, emb_dim)
-        self.gru = nn.GRU(emb_dim, hidden_dim, batch_first=True)
+        self.gru = nn.GRU(emb_dim, hidden_dim // 2, batch_first=True, bidirectional=True)
+        self.attn_score = nn.Linear(hidden_dim, 1)
         self.proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
@@ -41,6 +44,12 @@ class TinyTextEncoder(nn.Module):
 
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         x = self.token_emb(token_ids)
-        _, h = self.gru(x)
-        h = h.squeeze(0)
-        return self.proj(h)
+        h_seq, _ = self.gru(x)
+
+        scores = self.attn_score(h_seq).squeeze(-1)
+        mask = token_ids.eq(0)
+        scores = scores.masked_fill(mask, -1e9)
+        weights = torch.softmax(scores, dim=-1).unsqueeze(-1)
+
+        pooled = (h_seq * weights).sum(dim=1)
+        return self.proj(pooled)
