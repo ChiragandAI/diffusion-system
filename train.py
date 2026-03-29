@@ -46,6 +46,7 @@ def parse_args():
     p.add_argument("--channels_last", action="store_true", default=True, help="Use NHWC memory format on CUDA.")
     p.add_argument("--no-channels_last", action="store_false", dest="channels_last")
     p.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume training from.")
+    p.add_argument("--run_name", type=str, default=None, help="Optional custom run name (folder under output_dir).")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -126,13 +127,31 @@ def build_grad_scaler(device: str, use_amp: bool):
     return torch.cuda.amp.GradScaler(enabled=use_amp and device.startswith("cuda"))
 
 
+def _sanitize_name(text: str) -> str:
+    keep = []
+    for ch in text:
+        if ch.isalnum() or ch in {"-", "_"}:
+            keep.append(ch)
+        else:
+            keep.append("_")
+    return "".join(keep).strip("_")
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
     configure_cuda_runtime(args)
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    metrics_csv_path = os.path.join(args.output_dir, f"metrics_{run_timestamp}.csv")
+    auto_run_name = (
+        f"{run_timestamp}_{args.dataset}_img{args.image_size}_t{args.timesteps}_bs{args.batch_size}_lr{args.lr:g}"
+    )
+    run_name = _sanitize_name(args.run_name) if args.run_name else auto_run_name
+    run_dir = os.path.join(args.output_dir, f"run_{run_name}")
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(args.output_dir, "latest_run.txt"), "w") as f:
+        f.write(run_dir + "\n")
+    metrics_csv_path = os.path.join(run_dir, f"metrics_{run_timestamp}.csv")
 
     device = args.device
     tokenizer = CharTokenizer(max_length=args.max_text_len)
@@ -143,6 +162,7 @@ def main():
         f"compile={args.compile_model}",
         f"channels_last={args.channels_last and device.startswith('cuda')}",
         f"grad_accum={args.gradient_accumulation_steps}",
+        f"run_dir={run_dir}",
     )
 
     train_dataset = build_text_dataset(
@@ -234,7 +254,12 @@ def main():
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("global_step", 0))
         run_timestamp = ckpt.get("run_timestamp", run_timestamp)
-        metrics_csv_path = os.path.join(args.output_dir, f"metrics_{run_timestamp}.csv")
+        run_dir = ckpt.get("run_dir", os.path.dirname(args.resume_checkpoint))
+        run_name = ckpt.get("run_name", os.path.basename(run_dir).replace("run_", ""))
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(args.output_dir, "latest_run.txt"), "w") as f:
+            f.write(run_dir + "\n")
+        metrics_csv_path = os.path.join(run_dir, f"metrics_{run_timestamp}.csv")
 
         prev_train_losses = ckpt.get("train_losses", [])
         prev_val_losses = ckpt.get("val_losses", [])
@@ -330,9 +355,9 @@ def main():
         lr_scheduler.step()
 
         epoch_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        sample_path = os.path.join(args.output_dir, f"sample_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.png")
-        plot_path = os.path.join(args.output_dir, f"loss_curve_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.png")
-        ckpt_path = os.path.join(args.output_dir, f"ckpt_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.pt")
+        sample_path = os.path.join(run_dir, f"sample_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.png")
+        plot_path = os.path.join(run_dir, f"loss_curve_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.png")
+        ckpt_path = os.path.join(run_dir, f"ckpt_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.pt")
 
         ckpt = {
             "unet": unet.state_dict(),
@@ -351,13 +376,15 @@ def main():
             "global_step": global_step,
             "epoch": epoch,
             "run_timestamp": run_timestamp,
+            "run_name": run_name,
+            "run_dir": run_dir,
             "train_loss": train_loss,
             "val_loss": val_loss,
             "train_losses": train_losses + [train_loss],
             "val_losses": val_losses + [val_loss],
         }
         torch.save(ckpt, ckpt_path)
-        torch.save(ckpt, os.path.join(args.output_dir, "last.pt"))
+        torch.save(ckpt, os.path.join(run_dir, "last.pt"))
 
         sampled = sample_ddpm(
             unet=unet,
@@ -390,7 +417,7 @@ def main():
         maybe_display_image(plot_path)
         maybe_display_image(sample_path)
 
-    print(f"training finished, metrics logged at: {metrics_csv_path}")
+    print(f"training finished, run_dir={run_dir}, metrics logged at: {metrics_csv_path}")
 
 
 if __name__ == "__main__":

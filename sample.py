@@ -1,6 +1,7 @@
 import argparse
 import os
 from contextlib import nullcontext
+from datetime import datetime
 import torch
 from torchvision.utils import save_image, make_grid
 
@@ -13,7 +14,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Generate images from a trained tiny text-to-image diffusion model.")
     p.add_argument("--checkpoint", type=str, default="./outputs/last.pt")
     p.add_argument("--prompts", type=str, nargs="+", required=True)
-    p.add_argument("--output", type=str, default="./outputs/generated.png")
+    p.add_argument("--output", type=str, default=None, help="If omitted, saves inside checkpoint run folder.")
     p.add_argument("--cfg_scale", type=float, default=6.0)
     p.add_argument("--amp", action="store_true", default=True)
     p.add_argument("--no-amp", action="store_false", dest="amp")
@@ -34,8 +35,18 @@ def get_autocast_ctx(device: str, use_amp: bool):
 def main():
     args = parse_args()
     device = args.device
+    checkpoint_path = args.checkpoint
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
+    if not os.path.exists(checkpoint_path):
+        latest_run_file = os.path.join("./outputs", "latest_run.txt")
+        if os.path.exists(latest_run_file):
+            with open(latest_run_file, "r") as f:
+                latest_run = f.readline().strip()
+            candidate = os.path.join(latest_run, "last.pt")
+            if os.path.exists(candidate):
+                checkpoint_path = candidate
+
+    ckpt = torch.load(checkpoint_path, map_location=device)
 
     tokenizer = CharTokenizer(max_length=ckpt.get("tokenizer_max_length", 48))
     text_emb_dim = ckpt.get("text_emb_dim", 192)
@@ -76,10 +87,17 @@ def main():
             device=device,
         )
 
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+    if args.output is None:
+        ckpt_dir = os.path.dirname(checkpoint_path) or "."
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(ckpt_dir, f"generated_{ts}.png")
+    else:
+        output_path = args.output
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     grid = make_grid(images, nrow=min(4, len(args.prompts)))
-    save_image(grid, args.output)
-    print(f"saved generated image grid to: {args.output}")
+    save_image(grid, output_path)
+    print(f"saved generated image grid to: {output_path}")
 
 
 if __name__ == "__main__":

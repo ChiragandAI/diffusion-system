@@ -24,16 +24,17 @@ python train.py --dataset coco --coco_split train --epochs 40 --batch_size 32 --
 ```
 
 Artifacts:
-- `outputs/last.pt` checkpoint
-- `outputs/ckpt_<run_timestamp>_epoch_XXX_<timestamp>.pt`
-- `outputs/sample_<run_timestamp>_epoch_XXX_<timestamp>.png`
-- `outputs/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png`
-- `outputs/metrics_<run_timestamp>.csv`
+- `outputs/run_<timestamp_and_config>/last.pt` checkpoint
+- `outputs/run_<timestamp_and_config>/ckpt_<run_timestamp>_epoch_XXX_<timestamp>.pt`
+- `outputs/run_<timestamp_and_config>/sample_<run_timestamp>_epoch_XXX_<timestamp>.png`
+- `outputs/run_<timestamp_and_config>/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png`
+- `outputs/run_<timestamp_and_config>/metrics_<run_timestamp>.csv`
+- `outputs/latest_run.txt` pointer to the most recent run directory
 
 Resume training example:
 
 ```bash
-python train.py --dataset coco --epochs 60 --resume_checkpoint outputs/last.pt --device cuda --amp --compile_model --channels_last
+python train.py --dataset coco --epochs 60 --resume_checkpoint outputs/run_<your_run_name>/last.pt --device cuda --amp --compile_model --channels_last
 ```
 
 ## 3) Generate from text

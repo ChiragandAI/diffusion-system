@@ -44,10 +44,11 @@ python train.py --dataset coco --coco_split train --epochs 40 --batch_size 32 --
 ```
 
 This writes:
-- `outputs/last.pt`
-- `outputs/sample_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
-- `outputs/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
-- `outputs/metrics_<run_timestamp>.csv` with train and val loss history
+- `outputs/run_<timestamp_and_config>/last.pt`
+- `outputs/run_<timestamp_and_config>/sample_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
+- `outputs/run_<timestamp_and_config>/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png` after every epoch
+- `outputs/run_<timestamp_and_config>/metrics_<run_timestamp>.csv` with train and val loss history
+- `outputs/latest_run.txt` pointer to newest run directory
 
 ## 6) Inference (5 Prompts)
 
@@ -70,7 +71,7 @@ From the left file panel in Colab, download:
 ## 8) Resume Training Later
 
 ```bash
-python train.py --dataset coco --epochs 60 --resume_checkpoint outputs/last.pt --device cuda --amp --compile_model --channels_last
+python train.py --dataset coco --epochs 60 --resume_checkpoint outputs/run_<your_run_name>/last.pt --device cuda --amp --compile_model --channels_last
 ```
 
 If the checkpoint already completed 40 epochs, this continues from epoch 41 to 60.
