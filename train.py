@@ -75,7 +75,7 @@ def evaluate_val_loss(unet, text_encoder, tokenizer, scheduler, loader, device: 
         x_t, noise = scheduler.add_noise(images, t)
 
         token_ids = torch.stack([tokenizer.encode(c) for c in captions]).to(device)
-        amp_ctx = torch.cuda.amp.autocast(dtype=torch.float16) if use_amp else nullcontext()
+        amp_ctx = get_autocast_ctx(device, use_amp)
         with amp_ctx:
             text_cond = text_encoder(token_ids)
             pred_noise = unet(x_t, t, text_cond)
@@ -110,6 +110,20 @@ def configure_cuda_runtime(args):
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
+
+
+def get_autocast_ctx(device: str, use_amp: bool):
+    if not (use_amp and device.startswith("cuda")):
+        return nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+    return torch.cuda.amp.autocast(dtype=torch.float16)
+
+
+def build_grad_scaler(device: str, use_amp: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device="cuda", enabled=use_amp and device.startswith("cuda"))
+    return torch.cuda.amp.GradScaler(enabled=use_amp and device.startswith("cuda"))
 
 
 def main():
@@ -189,7 +203,7 @@ def main():
     optimizer = optim.AdamW(list(unet.parameters()) + list(text_encoder.parameters()), lr=args.lr)
     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.1)
     use_amp = args.amp and device.startswith("cuda")
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = build_grad_scaler(device, use_amp)
 
     preview_prompts = [
         "a photo of a cat",
@@ -265,7 +279,7 @@ def main():
                 drop_mask = torch.rand(images.size(0), device=device) < args.drop_text_prob
                 token_ids[drop_mask] = tokenizer.encode("").to(device)
 
-            amp_ctx = torch.cuda.amp.autocast(dtype=torch.float16) if use_amp else nullcontext()
+            amp_ctx = get_autocast_ctx(device, use_amp)
             with amp_ctx:
                 text_cond = text_encoder(token_ids)
                 pred_noise = unet(x_t, t, text_cond)

@@ -48,7 +48,8 @@ class TinyTextEncoder(nn.Module):
 
         scores = self.attn_score(h_seq).squeeze(-1)
         mask = token_ids.eq(0)
-        scores = scores.masked_fill(mask, -1e9)
+        neg_inf = torch.finfo(scores.dtype).min
+        scores = scores.masked_fill(mask, neg_inf)
         weights = torch.softmax(scores, dim=-1).unsqueeze(-1)
 
         pooled = (h_seq * weights).sum(dim=1)

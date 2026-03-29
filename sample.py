@@ -23,6 +23,14 @@ def parse_args():
     return p.parse_args()
 
 
+def get_autocast_ctx(device: str, use_amp: bool):
+    if not (use_amp and device.startswith("cuda")):
+        return nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast(device_type="cuda", dtype=torch.float16)
+    return torch.cuda.amp.autocast(dtype=torch.float16)
+
+
 def main():
     args = parse_args()
     device = args.device
@@ -55,7 +63,7 @@ def main():
     image_size = ckpt.get("image_size", 32)
 
     use_amp = args.amp and device.startswith("cuda")
-    amp_ctx = torch.cuda.amp.autocast(dtype=torch.float16) if use_amp else nullcontext()
+    amp_ctx = get_autocast_ctx(device, use_amp)
     with amp_ctx:
         images = sample_ddpm(
             unet=unet,
