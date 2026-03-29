@@ -30,6 +30,12 @@ Artifacts:
 - `outputs/loss_curve_<run_timestamp>_epoch_XXX_<timestamp>.png`
 - `outputs/metrics_<run_timestamp>.csv`
 
+Resume training example:
+
+```bash
+python train.py --dataset coco --epochs 20 --resume_checkpoint outputs/last.pt --device cuda
+```
+
 ## 3) Generate from text
 
 ```bash

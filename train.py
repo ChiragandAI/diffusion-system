@@ -30,6 +30,7 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default="./outputs")
     p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--drop_text_prob", type=float, default=0.1)
+    p.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume training from.")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
@@ -139,12 +140,46 @@ def main():
     train_losses = []
     val_losses = []
 
-    with open(metrics_csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["epoch", "timestamp", "train_loss", "val_loss", "sample_path", "plot_path"])
-
+    start_epoch = 1
     global_step = 0
-    for epoch in range(1, args.epochs + 1):
+
+    if args.resume_checkpoint:
+        ckpt = torch.load(args.resume_checkpoint, map_location=device)
+        unet.load_state_dict(ckpt["unet"])
+        text_encoder.load_state_dict(ckpt["text_encoder"])
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        global_step = int(ckpt.get("global_step", 0))
+        run_timestamp = ckpt.get("run_timestamp", run_timestamp)
+        metrics_csv_path = os.path.join(args.output_dir, f"metrics_{run_timestamp}.csv")
+
+        prev_train_losses = ckpt.get("train_losses", [])
+        prev_val_losses = ckpt.get("val_losses", [])
+        if prev_train_losses and prev_val_losses:
+            epoch_ids = list(range(1, len(prev_train_losses) + 1))
+            train_losses = list(prev_train_losses)
+            val_losses = list(prev_val_losses)
+
+        print(
+            f"Resumed from {args.resume_checkpoint} at epoch={start_epoch} "
+            f"(completed={start_epoch - 1}, global_step={global_step})"
+        )
+
+    if not os.path.exists(metrics_csv_path):
+        with open(metrics_csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "timestamp", "train_loss", "val_loss", "sample_path", "plot_path"])
+
+    if start_epoch > args.epochs:
+        print(
+            f"Nothing to train: start_epoch={start_epoch} is greater than target epochs={args.epochs}. "
+            "Increase --epochs to continue training."
+        )
+        return
+
+    for epoch in range(start_epoch, args.epochs + 1):
         unet.train()
         text_encoder.train()
 
@@ -185,6 +220,7 @@ def main():
         ckpt = {
             "unet": unet.state_dict(),
             "text_encoder": text_encoder.state_dict(),
+            "optimizer": optimizer.state_dict(),
             "dataset": args.dataset,
             "coco_split": args.coco_split,
             "timesteps": args.timesteps,
@@ -195,6 +231,8 @@ def main():
             "run_timestamp": run_timestamp,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            "train_losses": train_losses + [train_loss],
+            "val_losses": val_losses + [val_loss],
         }
         torch.save(ckpt, ckpt_path)
         torch.save(ckpt, os.path.join(args.output_dir, "last.pt"))

@@ -64,3 +64,11 @@ python sample.py \
 From the left file panel in Colab, download:
 - `outputs/last.pt`
 - `outputs/generated.png`
+
+## 8) Resume Training Later
+
+```bash
+python train.py --dataset coco --epochs 20 --resume_checkpoint outputs/last.pt --device cuda
+```
+
+If the checkpoint already completed 10 epochs, this continues from epoch 11 to 20.
