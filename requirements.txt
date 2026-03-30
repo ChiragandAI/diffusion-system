@@ -3,3 +3,4 @@ torchvision
 numpy<2
 pycocotools
 matplotlib
+transformers

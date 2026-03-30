@@ -1,4 +1,6 @@
 import string
+from typing import List, Tuple
+
 import torch
 import torch.nn as nn
 
@@ -6,7 +8,7 @@ import torch.nn as nn
 class CharTokenizer:
     """Very small character tokenizer for caption conditioning."""
 
-    def __init__(self, max_length: int = 48):
+    def __init__(self, max_length: int = 64):
         chars = string.ascii_lowercase + string.digits + " .,!?-_/"
         self.pad_token = "<pad>"
         self.unk_token = "<unk>"
@@ -29,10 +31,11 @@ class CharTokenizer:
 
 
 class TinyTextEncoder(nn.Module):
-    """Token embedding + BiGRU + attention pooling for stronger prompt representations."""
+    """Token embedding + BiGRU + attention pooling with token-level outputs."""
 
     def __init__(self, vocab_size: int, emb_dim: int = 192, hidden_dim: int = 384):
         super().__init__()
+        self.hidden_dim = hidden_dim
         self.token_emb = nn.Embedding(vocab_size, emb_dim)
         self.gru = nn.GRU(emb_dim, hidden_dim // 2, batch_first=True, bidirectional=True)
         self.attn_score = nn.Linear(hidden_dim, 1)
@@ -42,15 +45,69 @@ class TinyTextEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, token_ids: torch.Tensor, return_sequence: bool = False):
         x = self.token_emb(token_ids)
         h_seq, _ = self.gru(x)
 
-        scores = self.attn_score(h_seq).squeeze(-1)
         mask = token_ids.eq(0)
+        scores = self.attn_score(h_seq).squeeze(-1)
         neg_inf = torch.finfo(scores.dtype).min
         scores = scores.masked_fill(mask, neg_inf)
         weights = torch.softmax(scores, dim=-1).unsqueeze(-1)
 
         pooled = (h_seq * weights).sum(dim=1)
-        return self.proj(pooled)
+        pooled = self.proj(pooled)
+
+        if return_sequence:
+            return pooled, h_seq, mask
+        return pooled
+
+
+class HFTextEncoder(nn.Module):
+    """Optional pretrained transformer text encoder with projection to cond dim."""
+
+    def __init__(
+        self,
+        model_name: str = "distilbert-base-uncased",
+        max_length: int = 64,
+        hidden_dim: int = 384,
+        trainable: bool = False,
+    ):
+        super().__init__()
+        try:
+            from transformers import AutoModel, AutoTokenizer
+        except Exception as exc:
+            raise ImportError("transformers is required for HFTextEncoder. Install with: pip install transformers") from exc
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name)
+        self.max_length = max_length
+        self.hidden_dim = hidden_dim
+
+        src_dim = self.model.config.hidden_size
+        self.proj = nn.Linear(src_dim, hidden_dim) if src_dim != hidden_dim else nn.Identity()
+
+        if not trainable:
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            self.model.eval()
+
+    def encode_texts(self, texts: List[str], device: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        enc = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        enc = {k: v.to(device) for k, v in enc.items()}
+
+        out = self.model(**enc).last_hidden_state
+        seq = self.proj(out)
+
+        attn_mask = enc["attention_mask"].bool()
+        pad_mask = ~attn_mask
+
+        denom = attn_mask.sum(dim=1, keepdim=True).clamp_min(1)
+        pooled = (seq * attn_mask.unsqueeze(-1)).sum(dim=1) / denom
+        return pooled, seq, pad_mask

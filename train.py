@@ -13,8 +13,8 @@ from torch import optim
 from torch.utils.data import DataLoader
 
 from diffusion_scratch.data import build_object_prompt, build_text_dataset, build_val_text_dataset
-from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddpm
-from diffusion_scratch.text_encoder import CharTokenizer, TinyTextEncoder
+from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddim, sample_ddpm
+from diffusion_scratch.text_encoder import CharTokenizer, HFTextEncoder, TinyTextEncoder
 from diffusion_scratch.unet import TinyConditionalUNet
 
 
@@ -39,6 +39,9 @@ def parse_args():
     p.add_argument("--prefetch_factor", type=int, default=4)
     p.add_argument("--gradient_accumulation_steps", type=int, default=1)
     p.add_argument("--drop_text_prob", type=float, default=0.05)
+    p.add_argument("--text_encoder_type", type=str, default="tiny", choices=["tiny", "hf"])
+    p.add_argument("--hf_model_name", type=str, default="distilbert-base-uncased")
+    p.add_argument("--hf_trainable", action="store_true", default=False)
     p.add_argument("--max_text_len", type=int, default=64)
     p.add_argument("--text_emb_dim", type=int, default=192)
     p.add_argument("--text_hidden_dim", type=int, default=384)
@@ -48,6 +51,9 @@ def parse_args():
     p.add_argument("--use_ema_for_sampling", action="store_true", default=True)
     p.add_argument("--no-use_ema_for_sampling", action="store_false", dest="use_ema_for_sampling")
     p.add_argument("--preview_cfg_scale", type=float, default=6.0)
+    p.add_argument("--preview_sampler", type=str, default="ddim", choices=["ddpm", "ddim"])
+    p.add_argument("--preview_steps", type=int, default=60)
+    p.add_argument("--preview_eta", type=float, default=0.0)
     p.add_argument("--amp", action="store_true", default=True, help="Enable automatic mixed precision on CUDA.")
     p.add_argument("--no-amp", action="store_false", dest="amp", help="Disable automatic mixed precision.")
     p.add_argument("--compile_model", action="store_true", default=True, help="Use torch.compile for speed.")
@@ -71,6 +77,19 @@ def maybe_display_image(path: str):
         pass
 
 
+def encode_text_batch(captions, tokenizer, text_encoder, device: str, text_encoder_type: str):
+    if text_encoder_type == "tiny":
+        token_ids = torch.stack([tokenizer.encode(c) for c in captions]).to(device)
+        pooled, tokens, pad_mask = text_encoder(token_ids, return_sequence=True)
+        return pooled, tokens, pad_mask
+
+    if text_encoder_type == "hf":
+        pooled, tokens, pad_mask = text_encoder.encode_texts(captions, device=device)
+        return pooled, tokens, pad_mask
+
+    raise ValueError(f"Unsupported text_encoder_type: {text_encoder_type}.")
+
+
 @torch.no_grad()
 def evaluate_val_loss(
     unet,
@@ -82,6 +101,7 @@ def evaluate_val_loss(
     use_amp: bool,
     channels_last: bool,
     prediction_target: str,
+    text_encoder_type: str,
 ):
     unet.eval()
     text_encoder.eval()
@@ -96,11 +116,16 @@ def evaluate_val_loss(
         t = scheduler.sample_timesteps(images.size(0))
         x_t, noise = scheduler.add_noise(images, t)
 
-        token_ids = torch.stack([tokenizer.encode(c) for c in captions]).to(device)
+        text_pooled, text_tokens, text_pad_mask = encode_text_batch(
+            captions,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            device=device,
+            text_encoder_type=text_encoder_type,
+        )
         amp_ctx = get_autocast_ctx(device, use_amp)
         with amp_ctx:
-            text_cond = text_encoder(token_ids)
-            pred = unet(x_t, t, text_cond)
+            pred = unet(x_t, t, text_pooled, text_tokens, text_pad_mask)
             if prediction_target == "epsilon":
                 target = noise
             else:
@@ -216,7 +241,7 @@ def main():
     metrics_csv_path = os.path.join(run_dir, f"metrics_{run_timestamp}.csv")
 
     device = args.device
-    tokenizer = CharTokenizer(max_length=args.max_text_len)
+    tokenizer = CharTokenizer(max_length=args.max_text_len) if args.text_encoder_type == "tiny" else None
     print(
         "runtime:",
         f"device={device}",
@@ -226,6 +251,7 @@ def main():
         f"grad_accum={args.gradient_accumulation_steps}",
         f"beta_schedule={args.beta_schedule}",
         f"prediction_target={args.prediction_target}",
+        f"text_encoder_type={args.text_encoder_type}",
         f"run_dir={run_dir}",
     )
 
@@ -263,11 +289,19 @@ def main():
         drop_last=False,
     )
 
-    text_encoder = TinyTextEncoder(
-        vocab_size=tokenizer.vocab_size,
-        emb_dim=args.text_emb_dim,
-        hidden_dim=args.text_hidden_dim,
-    ).to(device)
+    if args.text_encoder_type == "tiny":
+        text_encoder = TinyTextEncoder(
+            vocab_size=tokenizer.vocab_size,
+            emb_dim=args.text_emb_dim,
+            hidden_dim=args.text_hidden_dim,
+        ).to(device)
+    else:
+        text_encoder = HFTextEncoder(
+            model_name=args.hf_model_name,
+            max_length=args.max_text_len,
+            hidden_dim=args.text_hidden_dim,
+            trainable=args.hf_trainable,
+        ).to(device)
     unet = TinyConditionalUNet(
         in_channels=3,
         base_channels=args.base_channels,
@@ -289,15 +323,11 @@ def main():
 
     if args.compile_model and hasattr(torch, "compile"):
         unet = torch.compile(unet)
-        text_encoder = torch.compile(text_encoder)
 
     scheduler = DiffusionScheduler(timesteps=args.timesteps, beta_schedule=args.beta_schedule, device=device)
 
-    optimizer = optim.AdamW(
-        list(unet.parameters()) + list(text_encoder.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
+    trainable_params = [p for p in list(unet.parameters()) + list(text_encoder.parameters()) if p.requires_grad]
+    optimizer = optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
 
     warmup_epochs = max(0, args.warmup_epochs)
     min_lr_ratio = max(0.0, min(1.0, args.min_lr_ratio))
@@ -389,16 +419,21 @@ def main():
             t = scheduler.sample_timesteps(images.size(0))
             x_t, noise = scheduler.add_noise(images, t)
 
-            token_ids = torch.stack([tokenizer.encode(c) for c in captions]).to(device)
-
             if args.drop_text_prob > 0:
                 drop_mask = torch.rand(images.size(0), device=device) < args.drop_text_prob
-                token_ids[drop_mask] = tokenizer.encode("").to(device)
+                captions = [("" if drop_mask[i].item() else c) for i, c in enumerate(captions)]
+
+            text_pooled, text_tokens, text_pad_mask = encode_text_batch(
+                captions,
+                tokenizer=tokenizer,
+                text_encoder=text_encoder,
+                device=device,
+                text_encoder_type=args.text_encoder_type,
+            )
 
             amp_ctx = get_autocast_ctx(device, use_amp)
             with amp_ctx:
-                text_cond = text_encoder(token_ids)
-                pred = unet(x_t, t, text_cond)
+                pred = unet(x_t, t, text_pooled, text_tokens, text_pad_mask)
                 if args.prediction_target == "epsilon":
                     target = noise
                 else:
@@ -459,6 +494,7 @@ def main():
             use_amp=use_amp,
             channels_last=args.channels_last,
             prediction_target=args.prediction_target,
+            text_encoder_type=args.text_encoder_type,
         )
         lr_scheduler.step()
 
@@ -487,7 +523,10 @@ def main():
             "beta_schedule": args.beta_schedule,
             "prediction_target": args.prediction_target,
             "image_size": args.image_size,
-            "tokenizer_max_length": tokenizer.max_length,
+            "tokenizer_max_length": (tokenizer.max_length if tokenizer is not None else args.max_text_len),
+            "text_encoder_type": args.text_encoder_type,
+            "hf_model_name": args.hf_model_name,
+            "hf_trainable": args.hf_trainable,
             "text_emb_dim": args.text_emb_dim,
             "text_hidden_dim": args.text_hidden_dim,
             "base_channels": args.base_channels,
@@ -516,17 +555,34 @@ def main():
             else (text_encoder._orig_mod if hasattr(text_encoder, "_orig_mod") else text_encoder)
         )
         preview_prompts = [build_object_prompt(name) for name in preview_object_names]
-        sampled = sample_ddpm(
-            unet=sample_unet,
-            text_encoder=sample_text_encoder,
-            tokenizer=tokenizer,
-            scheduler=scheduler,
-            prompts=preview_prompts,
-            image_size=args.image_size,
-            cfg_scale=args.preview_cfg_scale,
-            prediction_target=args.prediction_target,
-            device=device,
-        )
+        if args.preview_sampler == "ddim":
+            sampled = sample_ddim(
+                unet=sample_unet,
+                text_encoder=sample_text_encoder,
+                tokenizer=tokenizer,
+                scheduler=scheduler,
+                prompts=preview_prompts,
+                image_size=args.image_size,
+                cfg_scale=args.preview_cfg_scale,
+                prediction_target=args.prediction_target,
+                text_encoder_type=args.text_encoder_type,
+                steps=args.preview_steps,
+                eta=args.preview_eta,
+                device=device,
+            )
+        else:
+            sampled = sample_ddpm(
+                unet=sample_unet,
+                text_encoder=sample_text_encoder,
+                tokenizer=tokenizer,
+                scheduler=scheduler,
+                prompts=preview_prompts,
+                image_size=args.image_size,
+                cfg_scale=args.preview_cfg_scale,
+                prediction_target=args.prediction_target,
+                text_encoder_type=args.text_encoder_type,
+                device=device,
+            )
         save_labeled_samples(sampled, preview_prompts, sample_path)
 
         epoch_ids.append(epoch)

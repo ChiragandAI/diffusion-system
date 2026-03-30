@@ -2,11 +2,12 @@ import argparse
 import os
 from contextlib import nullcontext
 from datetime import datetime
-import torch
-from torchvision.utils import save_image, make_grid
 
-from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddpm
-from diffusion_scratch.text_encoder import CharTokenizer, TinyTextEncoder
+import torch
+from torchvision.utils import make_grid, save_image
+
+from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddim, sample_ddpm
+from diffusion_scratch.text_encoder import CharTokenizer, HFTextEncoder, TinyTextEncoder
 from diffusion_scratch.unet import TinyConditionalUNet
 
 
@@ -16,6 +17,9 @@ def parse_args():
     p.add_argument("--prompts", type=str, nargs="+", required=True)
     p.add_argument("--output", type=str, default=None, help="If omitted, saves inside checkpoint run folder.")
     p.add_argument("--cfg_scale", type=float, default=6.0)
+    p.add_argument("--sampler", type=str, default="ddim", choices=["ddpm", "ddim"])
+    p.add_argument("--steps", type=int, default=60, help="DDIM steps (ignored for DDPM).")
+    p.add_argument("--eta", type=float, default=0.0, help="DDIM eta (0 = deterministic).")
     p.add_argument("--use_ema", action="store_true", default=True, help="Use EMA weights from checkpoint if available.")
     p.add_argument("--no-use_ema", action="store_false", dest="use_ema")
     p.add_argument("--amp", action="store_true", default=True)
@@ -50,16 +54,27 @@ def main():
 
     ckpt = torch.load(checkpoint_path, map_location=device)
 
-    tokenizer = CharTokenizer(max_length=ckpt.get("tokenizer_max_length", 48))
-    text_emb_dim = ckpt.get("text_emb_dim", 192)
+    text_encoder_type = ckpt.get("text_encoder_type", "tiny")
     text_hidden_dim = ckpt.get("text_hidden_dim", 384)
+    text_emb_dim = ckpt.get("text_emb_dim", 192)
     base_channels = ckpt.get("base_channels", 96)
 
-    text_encoder = TinyTextEncoder(
-        vocab_size=tokenizer.vocab_size,
-        emb_dim=text_emb_dim,
-        hidden_dim=text_hidden_dim,
-    ).to(device)
+    tokenizer = CharTokenizer(max_length=ckpt.get("tokenizer_max_length", 64)) if text_encoder_type == "tiny" else None
+
+    if text_encoder_type == "tiny":
+        text_encoder = TinyTextEncoder(
+            vocab_size=tokenizer.vocab_size,
+            emb_dim=text_emb_dim,
+            hidden_dim=text_hidden_dim,
+        ).to(device)
+    else:
+        text_encoder = HFTextEncoder(
+            model_name=ckpt.get("hf_model_name", "distilbert-base-uncased"),
+            max_length=ckpt.get("tokenizer_max_length", 64),
+            hidden_dim=text_hidden_dim,
+            trainable=ckpt.get("hf_trainable", False),
+        ).to(device)
+
     unet = TinyConditionalUNet(
         in_channels=3,
         base_channels=base_channels,
@@ -86,17 +101,34 @@ def main():
     use_amp = args.amp and device.startswith("cuda")
     amp_ctx = get_autocast_ctx(device, use_amp)
     with amp_ctx:
-        images = sample_ddpm(
-            unet=unet,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            scheduler=scheduler,
-            prompts=args.prompts,
-            image_size=image_size,
-            cfg_scale=args.cfg_scale,
-            prediction_target=prediction_target,
-            device=device,
-        )
+        if args.sampler == "ddim":
+            images = sample_ddim(
+                unet=unet,
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                scheduler=scheduler,
+                prompts=args.prompts,
+                image_size=image_size,
+                cfg_scale=args.cfg_scale,
+                prediction_target=prediction_target,
+                text_encoder_type=text_encoder_type,
+                steps=args.steps,
+                eta=args.eta,
+                device=device,
+            )
+        else:
+            images = sample_ddpm(
+                unet=unet,
+                text_encoder=text_encoder,
+                tokenizer=tokenizer,
+                scheduler=scheduler,
+                prompts=args.prompts,
+                image_size=image_size,
+                cfg_scale=args.cfg_scale,
+                prediction_target=prediction_target,
+                text_encoder_type=text_encoder_type,
+                device=device,
+            )
 
     if args.output is None:
         ckpt_dir = os.path.dirname(checkpoint_path) or "."

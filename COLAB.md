@@ -62,6 +62,12 @@ python sample.py \
   --amp --channels_last
 ```
 
+Optional stronger text encoder + DDIM preview:
+
+```bash
+python train.py --dataset coco --epochs 50 --text_encoder_type hf --hf_model_name distilbert-base-uncased --prediction_target v --beta_schedule cosine --preview_sampler ddim --preview_steps 60 --timesteps 300 --batch_size 16 --val_batch_size 16 --lr 8e-5 --device cuda --amp --compile_model --channels_last
+```
+
 ## 7) Download Artifacts
 
 From the left file panel in Colab, download:

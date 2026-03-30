@@ -4,7 +4,7 @@ This repository contains a **from-scratch, educational text-to-image diffusion m
 
 It includes:
 - Character-level text tokenizer + BiGRU attention text encoder
-- Deeper FiLM-conditioned U-Net with bottleneck self-attention
+- Deeper FiLM-conditioned U-Net with text cross-attention + bottleneck self-attention
 - DDPM forward/reverse process implementation
 - Classifier-free guidance (CFG)
 - Training on COCO captions (default), with optional STL-10/CIFAR-10
@@ -12,6 +12,7 @@ It includes:
 - Per-epoch timestamped sample generations, checkpoints, and metrics logs
 - Advanced controls: warmup + cosine LR floor, configurable weight decay, EMA weights
 - Diffusion controls: cosine/linear beta schedule, epsilon/v prediction target, early stopping
+- Optional pretrained text encoder (`HFTextEncoder`) and DDIM sampling
 
 ## 1) Install
 
@@ -29,6 +30,12 @@ Advanced control example:
 
 ```bash
 python train.py --dataset coco --epochs 50 --batch_size 16 --val_batch_size 16 --lr 8e-5 --weight_decay 0.01 --warmup_epochs 3 --min_lr_ratio 0.05 --ema_decay 0.999 --timesteps 300 --image_size 96 --device cuda --amp --compile_model --channels_last
+```
+
+Stable-Diffusion-inspired text conditioning run:
+
+```bash
+python train.py --dataset coco --epochs 50 --text_encoder_type hf --hf_model_name distilbert-base-uncased --prediction_target v --beta_schedule cosine --preview_sampler ddim --preview_steps 60 --timesteps 300 --batch_size 16 --val_batch_size 16 --lr 8e-5 --device cuda --amp --compile_model --channels_last
 ```
 
 Artifacts:

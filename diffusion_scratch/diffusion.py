@@ -61,6 +61,49 @@ class DiffusionScheduler:
 
 
 @torch.no_grad()
+def build_text_conditioning(text_encoder, tokenizer, prompts, device: str, text_encoder_type: str = "tiny"):
+    if text_encoder_type == "tiny":
+        token_ids = torch.stack([tokenizer.encode(p) for p in prompts]).to(device)
+        pooled, tokens, pad_mask = text_encoder(token_ids, return_sequence=True)
+        return pooled, tokens, pad_mask
+
+    if text_encoder_type == "hf":
+        pooled, tokens, pad_mask = text_encoder.encode_texts(prompts, device=device)
+        return pooled, tokens, pad_mask
+
+    raise ValueError(f"Unsupported text_encoder_type: {text_encoder_type}. Use 'tiny' or 'hf'.")
+
+
+@torch.no_grad()
+def predict_eps(
+    unet,
+    x: torch.Tensor,
+    t: torch.Tensor,
+    cond_pooled: torch.Tensor,
+    cond_tokens: torch.Tensor,
+    cond_mask: torch.Tensor,
+    uncond_pooled: torch.Tensor,
+    uncond_tokens: torch.Tensor,
+    uncond_mask: torch.Tensor,
+    cfg_scale: float,
+    prediction_target: str,
+    scheduler: DiffusionScheduler,
+):
+    model_uncond = unet(x, t, uncond_pooled, uncond_tokens, uncond_mask)
+    model_cond = unet(x, t, cond_pooled, cond_tokens, cond_mask)
+    model_out = model_uncond + cfg_scale * (model_cond - model_uncond)
+
+    a_hat_t = scheduler.sqrt_alpha_hat[t].view(-1, 1, 1, 1)
+    om_t = scheduler.sqrt_one_minus_alpha_hat[t].view(-1, 1, 1, 1)
+
+    if prediction_target == "epsilon":
+        return model_out
+    if prediction_target == "v":
+        return a_hat_t * model_out + om_t * x
+    raise ValueError(f"Unsupported prediction_target: {prediction_target}. Use 'epsilon' or 'v'.")
+
+
+@torch.no_grad()
 def sample_ddpm(
     unet,
     text_encoder,
@@ -70,6 +113,7 @@ def sample_ddpm(
     image_size: int = 32,
     cfg_scale: float = 5.0,
     prediction_target: str = "epsilon",
+    text_encoder_type: str = "tiny",
     device: str = "cpu",
 ):
     unet.eval()
@@ -78,38 +122,98 @@ def sample_ddpm(
     n = len(prompts)
     x = torch.randn(n, 3, image_size, image_size, device=device)
 
-    token_ids = torch.stack([tokenizer.encode(p) for p in prompts]).to(device)
-    null_ids = torch.stack([tokenizer.encode("") for _ in prompts]).to(device)
-
-    cond = text_encoder(token_ids)
-    uncond = text_encoder(null_ids)
+    cond = build_text_conditioning(text_encoder, tokenizer, prompts, device, text_encoder_type=text_encoder_type)
+    uncond = build_text_conditioning(text_encoder, tokenizer, [""] * n, device, text_encoder_type=text_encoder_type)
 
     for i in reversed(range(scheduler.timesteps)):
         t = torch.full((n,), i, device=device, dtype=torch.long)
-
-        eps_uncond = unet(x, t, uncond)
-        eps_cond = unet(x, t, cond)
-        model_out = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
+        eps = predict_eps(
+            unet,
+            x,
+            t,
+            cond_pooled=cond[0],
+            cond_tokens=cond[1],
+            cond_mask=cond[2],
+            uncond_pooled=uncond[0],
+            uncond_tokens=uncond[1],
+            uncond_mask=uncond[2],
+            cfg_scale=cfg_scale,
+            prediction_target=prediction_target,
+            scheduler=scheduler,
+        )
 
         alpha = scheduler.alphas[i]
         alpha_hat = scheduler.alpha_hat[i]
         beta = scheduler.betas[i]
-        sqrt_alpha_hat = scheduler.sqrt_alpha_hat[i]
-        sqrt_one_minus_alpha_hat = scheduler.sqrt_one_minus_alpha_hat[i]
 
-        if prediction_target == "epsilon":
-            eps = model_out
-        elif prediction_target == "v":
-            eps = sqrt_alpha_hat * model_out + sqrt_one_minus_alpha_hat * x
-        else:
-            raise ValueError(f"Unsupported prediction_target: {prediction_target}. Use 'epsilon' or 'v'.")
-
-        if i > 0:
-            z = torch.randn_like(x)
-        else:
-            z = torch.zeros_like(x)
-
+        z = torch.randn_like(x) if i > 0 else torch.zeros_like(x)
         x = (1.0 / torch.sqrt(alpha)) * (x - ((1.0 - alpha) / torch.sqrt(1.0 - alpha_hat)) * eps) + torch.sqrt(beta) * z
+
+    x = x.clamp(-1, 1)
+    return (x + 1) / 2
+
+
+@torch.no_grad()
+def sample_ddim(
+    unet,
+    text_encoder,
+    tokenizer,
+    scheduler: DiffusionScheduler,
+    prompts,
+    image_size: int = 32,
+    cfg_scale: float = 5.0,
+    prediction_target: str = "epsilon",
+    text_encoder_type: str = "tiny",
+    steps: int = 50,
+    eta: float = 0.0,
+    device: str = "cpu",
+):
+    unet.eval()
+    text_encoder.eval()
+
+    n = len(prompts)
+    x = torch.randn(n, 3, image_size, image_size, device=device)
+
+    cond = build_text_conditioning(text_encoder, tokenizer, prompts, device, text_encoder_type=text_encoder_type)
+    uncond = build_text_conditioning(text_encoder, tokenizer, [""] * n, device, text_encoder_type=text_encoder_type)
+
+    steps = max(2, min(steps, scheduler.timesteps))
+    t_seq = torch.linspace(scheduler.timesteps - 1, 0, steps, device=device).long()
+
+    for idx in range(len(t_seq) - 1):
+        t_cur = t_seq[idx]
+        t_next = t_seq[idx + 1]
+        t = torch.full((n,), int(t_cur.item()), device=device, dtype=torch.long)
+
+        eps = predict_eps(
+            unet,
+            x,
+            t,
+            cond_pooled=cond[0],
+            cond_tokens=cond[1],
+            cond_mask=cond[2],
+            uncond_pooled=uncond[0],
+            uncond_tokens=uncond[1],
+            uncond_mask=uncond[2],
+            cfg_scale=cfg_scale,
+            prediction_target=prediction_target,
+            scheduler=scheduler,
+        )
+
+        alpha_t = scheduler.alpha_hat[t_cur]
+        alpha_next = scheduler.alpha_hat[t_next]
+
+        x0_pred = (x - torch.sqrt(1 - alpha_t) * eps) / torch.sqrt(alpha_t)
+
+        sigma = (
+            eta
+            * torch.sqrt((1 - alpha_next) / (1 - alpha_t))
+            * torch.sqrt(1 - alpha_t / alpha_next)
+        )
+        noise = torch.randn_like(x) if sigma.item() > 0 else torch.zeros_like(x)
+
+        dir_xt = torch.sqrt(torch.clamp(1 - alpha_next - sigma**2, min=0.0)) * eps
+        x = torch.sqrt(alpha_next) * x0_pred + dir_xt + sigma * noise
 
     x = x.clamp(-1, 1)
     return (x + 1) / 2
