@@ -11,7 +11,6 @@ import torch
 import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader
-from torchvision.utils import make_grid, save_image
 
 from diffusion_scratch.data import build_object_prompt, build_text_dataset, build_val_text_dataset
 from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddpm
@@ -104,6 +103,35 @@ def plot_losses(epochs, train_losses, val_losses, save_path: str):
     plt.title("Train vs Val Loss")
     plt.grid(True, alpha=0.3)
     plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=140)
+    plt.close()
+
+
+def save_labeled_samples(samples: torch.Tensor, prompts, save_path: str, cols: int = 3):
+    samples = samples.detach().cpu().clamp(0, 1)
+    n = samples.size(0)
+    rows = max(1, math.ceil(n / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+
+    if rows == 1 and cols == 1:
+        axes = [[axes]]
+    elif rows == 1:
+        axes = [axes]
+    elif cols == 1:
+        axes = [[ax] for ax in axes]
+
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            ax = axes[r][c]
+            if idx < n:
+                img = samples[idx].permute(1, 2, 0).numpy()
+                ax.imshow(img)
+                ax.set_title(prompts[idx], fontsize=9, loc="left")
+            ax.axis("off")
+            idx += 1
+
     plt.tight_layout()
     plt.savefig(save_path, dpi=140)
     plt.close()
@@ -456,8 +484,7 @@ def main():
             cfg_scale=args.preview_cfg_scale,
             device=device,
         )
-        grid = make_grid(sampled, nrow=min(3, len(preview_prompts)))
-        save_image(grid, sample_path)
+        save_labeled_samples(sampled, preview_prompts, sample_path, cols=min(3, len(preview_prompts)))
 
         epoch_ids.append(epoch)
         train_losses.append(train_loss)
