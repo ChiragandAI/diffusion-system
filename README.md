@@ -11,6 +11,7 @@ It includes:
 - Per-epoch validation evaluation and loss curve tracking
 - Per-epoch timestamped sample generations, checkpoints, and metrics logs
 - Advanced controls: warmup + cosine LR floor, configurable weight decay, EMA weights
+- Diffusion controls: cosine/linear beta schedule, epsilon/v prediction target, early stopping
 
 ## 1) Install
 

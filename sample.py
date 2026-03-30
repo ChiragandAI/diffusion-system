@@ -75,8 +75,13 @@ def main():
         text_encoder.load_state_dict(ckpt["ema_text_encoder"])
         unet.load_state_dict(ckpt["ema_unet"])
 
-    scheduler = DiffusionScheduler(timesteps=ckpt.get("timesteps", 300), device=device)
+    scheduler = DiffusionScheduler(
+        timesteps=ckpt.get("timesteps", 300),
+        beta_schedule=ckpt.get("beta_schedule", "linear"),
+        device=device,
+    )
     image_size = ckpt.get("image_size", 32)
+    prediction_target = ckpt.get("prediction_target", "epsilon")
 
     use_amp = args.amp and device.startswith("cuda")
     amp_ctx = get_autocast_ctx(device, use_amp)
@@ -89,6 +94,7 @@ def main():
             prompts=args.prompts,
             image_size=image_size,
             cfg_scale=args.cfg_scale,
+            prediction_target=prediction_target,
             device=device,
         )
 

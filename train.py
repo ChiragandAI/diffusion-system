@@ -30,6 +30,8 @@ def parse_args():
     p.add_argument("--warmup_epochs", type=int, default=2, help="Linear LR warmup epochs before cosine decay.")
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--timesteps", type=int, default=400)
+    p.add_argument("--beta_schedule", type=str, default="cosine", choices=["linear", "cosine"])
+    p.add_argument("--prediction_target", type=str, default="v", choices=["epsilon", "v"])
     p.add_argument("--image_size", type=int, default=64)
     p.add_argument("--data_dir", type=str, default="./data")
     p.add_argument("--output_dir", type=str, default="./outputs")
@@ -53,6 +55,8 @@ def parse_args():
     p.add_argument("--channels_last", action="store_true", default=True, help="Use NHWC memory format on CUDA.")
     p.add_argument("--no-channels_last", action="store_false", dest="channels_last")
     p.add_argument("--resume_checkpoint", type=str, default=None, help="Path to checkpoint to resume training from.")
+    p.add_argument("--early_stopping_patience", type=int, default=10, help="Stop if val loss does not improve.")
+    p.add_argument("--early_stopping_min_delta", type=float, default=1e-4)
     p.add_argument("--run_name", type=str, default=None, help="Optional custom run name (folder under output_dir).")
     p.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
@@ -68,7 +72,17 @@ def maybe_display_image(path: str):
 
 
 @torch.no_grad()
-def evaluate_val_loss(unet, text_encoder, tokenizer, scheduler, loader, device: str, use_amp: bool, channels_last: bool):
+def evaluate_val_loss(
+    unet,
+    text_encoder,
+    tokenizer,
+    scheduler,
+    loader,
+    device: str,
+    use_amp: bool,
+    channels_last: bool,
+    prediction_target: str,
+):
     unet.eval()
     text_encoder.eval()
 
@@ -86,8 +100,14 @@ def evaluate_val_loss(unet, text_encoder, tokenizer, scheduler, loader, device: 
         amp_ctx = get_autocast_ctx(device, use_amp)
         with amp_ctx:
             text_cond = text_encoder(token_ids)
-            pred_noise = unet(x_t, t, text_cond)
-            loss = F.mse_loss(pred_noise, noise)
+            pred = unet(x_t, t, text_cond)
+            if prediction_target == "epsilon":
+                target = noise
+            else:
+                a = scheduler.sqrt_alpha_hat[t].view(-1, 1, 1, 1)
+                b = scheduler.sqrt_one_minus_alpha_hat[t].view(-1, 1, 1, 1)
+                target = a * noise - b * images
+            loss = F.mse_loss(pred, target)
         total_loss += loss.item()
         num_steps += 1
 
@@ -206,6 +226,8 @@ def main():
         f"compile={args.compile_model}",
         f"channels_last={args.channels_last and device.startswith('cuda')}",
         f"grad_accum={args.gradient_accumulation_steps}",
+        f"beta_schedule={args.beta_schedule}",
+        f"prediction_target={args.prediction_target}",
         f"run_dir={run_dir}",
     )
 
@@ -271,7 +293,7 @@ def main():
         unet = torch.compile(unet)
         text_encoder = torch.compile(text_encoder)
 
-    scheduler = DiffusionScheduler(timesteps=args.timesteps, device=device)
+    scheduler = DiffusionScheduler(timesteps=args.timesteps, beta_schedule=args.beta_schedule, device=device)
 
     optimizer = optim.AdamW(
         list(unet.parameters()) + list(text_encoder.parameters()),
@@ -303,6 +325,8 @@ def main():
 
     start_epoch = 1
     global_step = 0
+    best_val_loss = float("inf")
+    epochs_without_improve = 0
 
     if args.resume_checkpoint:
         ckpt = torch.load(args.resume_checkpoint, map_location=device)
@@ -320,6 +344,8 @@ def main():
 
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("global_step", 0))
+        best_val_loss = float(ckpt.get("best_val_loss", float("inf")))
+        epochs_without_improve = int(ckpt.get("epochs_without_improve", 0))
         run_timestamp = ckpt.get("run_timestamp", run_timestamp)
         run_dir = ckpt.get("run_dir", os.path.dirname(args.resume_checkpoint))
         run_name = ckpt.get("run_name", os.path.basename(run_dir).replace("run_", ""))
@@ -374,8 +400,14 @@ def main():
             amp_ctx = get_autocast_ctx(device, use_amp)
             with amp_ctx:
                 text_cond = text_encoder(token_ids)
-                pred_noise = unet(x_t, t, text_cond)
-                loss = F.mse_loss(pred_noise, noise)
+                pred = unet(x_t, t, text_cond)
+                if args.prediction_target == "epsilon":
+                    target = noise
+                else:
+                    a = scheduler.sqrt_alpha_hat[t].view(-1, 1, 1, 1)
+                    b = scheduler.sqrt_one_minus_alpha_hat[t].view(-1, 1, 1, 1)
+                    target = a * noise - b * images
+                loss = F.mse_loss(pred, target)
                 scaled_loss = loss / max(1, args.gradient_accumulation_steps)
 
             scaler.scale(scaled_loss).backward()
@@ -428,8 +460,16 @@ def main():
             device,
             use_amp=use_amp,
             channels_last=args.channels_last,
+            prediction_target=args.prediction_target,
         )
         lr_scheduler.step()
+
+        improved = val_loss < (best_val_loss - args.early_stopping_min_delta)
+        if improved:
+            best_val_loss = val_loss
+            epochs_without_improve = 0
+        else:
+            epochs_without_improve += 1
 
         epoch_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         sample_path = os.path.join(run_dir, f"sample_{run_timestamp}_epoch_{epoch:03d}_{epoch_timestamp}.png")
@@ -446,6 +486,8 @@ def main():
             "dataset": args.dataset,
             "coco_split": args.coco_split,
             "timesteps": args.timesteps,
+            "beta_schedule": args.beta_schedule,
+            "prediction_target": args.prediction_target,
             "image_size": args.image_size,
             "tokenizer_max_length": tokenizer.max_length,
             "text_emb_dim": args.text_emb_dim,
@@ -458,6 +500,8 @@ def main():
             "run_dir": run_dir,
             "train_loss": train_loss,
             "val_loss": val_loss,
+            "best_val_loss": best_val_loss,
+            "epochs_without_improve": epochs_without_improve,
             "train_losses": train_losses + [train_loss],
             "val_losses": val_losses + [val_loss],
         }
@@ -482,6 +526,7 @@ def main():
             prompts=preview_prompts,
             image_size=args.image_size,
             cfg_scale=args.preview_cfg_scale,
+            prediction_target=args.prediction_target,
             device=device,
         )
         save_labeled_samples(sampled, preview_prompts, sample_path, cols=min(3, len(preview_prompts)))
@@ -504,6 +549,13 @@ def main():
         # In notebook environments (e.g., Colab), this displays the evolution graph and current sample.
         maybe_display_image(plot_path)
         maybe_display_image(sample_path)
+
+        if args.early_stopping_patience > 0 and epochs_without_improve >= args.early_stopping_patience:
+            print(
+                f"Early stopping at epoch {epoch}: no val improvement > {args.early_stopping_min_delta} "
+                f"for {args.early_stopping_patience} epochs."
+            )
+            break
 
     print(f"training finished, run_dir={run_dir}, metrics logged at: {metrics_csv_path}")
 

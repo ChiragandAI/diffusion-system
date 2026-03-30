@@ -1,12 +1,33 @@
 import torch
 
 
+def cosine_beta_schedule(timesteps: int, s: float = 0.008) -> torch.Tensor:
+    steps = timesteps + 1
+    x = torch.linspace(0, timesteps, steps, dtype=torch.float32)
+    alphas_cumprod = torch.cos(((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
+    alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+    betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
+    return betas.clamp(1e-5, 0.999)
+
+
 class DiffusionScheduler:
-    def __init__(self, timesteps: int = 1000, beta_start: float = 1e-4, beta_end: float = 2e-2, device: str = "cpu"):
+    def __init__(
+        self,
+        timesteps: int = 1000,
+        beta_start: float = 1e-4,
+        beta_end: float = 2e-2,
+        beta_schedule: str = "linear",
+        device: str = "cpu",
+    ):
         self.timesteps = timesteps
         self.device = device
 
-        betas = torch.linspace(beta_start, beta_end, timesteps, device=device)
+        if beta_schedule == "linear":
+            betas = torch.linspace(beta_start, beta_end, timesteps, device=device)
+        elif beta_schedule == "cosine":
+            betas = cosine_beta_schedule(timesteps).to(device)
+        else:
+            raise ValueError(f"Unsupported beta_schedule: {beta_schedule}. Use 'linear' or 'cosine'.")
         alphas = 1.0 - betas
         alpha_hat = torch.cumprod(alphas, dim=0)
 
@@ -48,6 +69,7 @@ def sample_ddpm(
     prompts,
     image_size: int = 32,
     cfg_scale: float = 5.0,
+    prediction_target: str = "epsilon",
     device: str = "cpu",
 ):
     unet.eval()
@@ -67,11 +89,20 @@ def sample_ddpm(
 
         eps_uncond = unet(x, t, uncond)
         eps_cond = unet(x, t, cond)
-        eps = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
+        model_out = eps_uncond + cfg_scale * (eps_cond - eps_uncond)
 
         alpha = scheduler.alphas[i]
         alpha_hat = scheduler.alpha_hat[i]
         beta = scheduler.betas[i]
+        sqrt_alpha_hat = scheduler.sqrt_alpha_hat[i]
+        sqrt_one_minus_alpha_hat = scheduler.sqrt_one_minus_alpha_hat[i]
+
+        if prediction_target == "epsilon":
+            eps = model_out
+        elif prediction_target == "v":
+            eps = sqrt_alpha_hat * model_out + sqrt_one_minus_alpha_hat * x
+        else:
+            raise ValueError(f"Unsupported prediction_target: {prediction_target}. Use 'epsilon' or 'v'.")
 
         if i > 0:
             z = torch.randn_like(x)
