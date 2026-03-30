@@ -30,13 +30,34 @@ STL10_CLASSNAMES = [
     "truck",
 ]
 
-PROMPT_TEMPLATES = [
-    "a photo of a {x}",
-    "an image of a {x}",
-    "a centered {x}",
-    "a clean picture of a {x}",
-    "a realistic {x}",
+PROMPT_ACTION_WORDS = [
+    "create",
+    "give",
+    "generate",
+    "show",
+    "render",
+    "produce",
 ]
+
+PROMPT_VISUAL_WORDS = [
+    "image",
+    "picture",
+    "photo",
+    "photograph",
+    "visual",
+]
+
+
+def _article_for(word: str) -> str:
+    return "an" if word and word[0].lower() in {"a", "e", "i", "o", "u"} else "a"
+
+
+def build_object_prompt(object_name: str) -> str:
+    action_word = random.choice(PROMPT_ACTION_WORDS)
+    visual_word = random.choice(PROMPT_VISUAL_WORDS)
+    object_name = object_name.strip().lower()
+    article = _article_for(object_name)
+    return f"{action_word} a {visual_word} of {article} {object_name}"
 
 
 class CIFAR10TextDataset(Dataset):
@@ -56,7 +77,7 @@ class CIFAR10TextDataset(Dataset):
         return len(self.ds)
 
     def _caption_for_class(self, class_name: str) -> str:
-        return random.choice(PROMPT_TEMPLATES).format(x=class_name)
+        return build_object_prompt(class_name)
 
     def __getitem__(self, idx: int):
         image, label = self.ds[idx]
@@ -82,7 +103,7 @@ class STL10TextDataset(Dataset):
 
     def __getitem__(self, idx: int):
         image, label = self.ds[idx]
-        caption = random.choice(PROMPT_TEMPLATES).format(x=STL10_CLASSNAMES[label])
+        caption = build_object_prompt(STL10_CLASSNAMES[label])
         return image, caption
 
 
@@ -146,7 +167,7 @@ class COCOCaptionTextDataset(Dataset):
     def __getitem__(self, idx: int):
         image, captions = self.ds[idx]
         if not captions:
-            caption = "a photo"
+            caption = build_object_prompt("scene")
         else:
             caption = random.choice(captions).strip().lower()
         return image, caption

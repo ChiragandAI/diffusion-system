@@ -13,7 +13,7 @@ from torch import optim
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 
-from diffusion_scratch.data import build_text_dataset, build_val_text_dataset
+from diffusion_scratch.data import build_object_prompt, build_text_dataset, build_val_text_dataset
 from diffusion_scratch.diffusion import DiffusionScheduler, sample_ddpm
 from diffusion_scratch.text_encoder import CharTokenizer, TinyTextEncoder
 from diffusion_scratch.unet import TinyConditionalUNet
@@ -267,13 +267,7 @@ def main():
     use_amp = args.amp and device.startswith("cuda")
     scaler = build_grad_scaler(device, use_amp)
 
-    preview_prompts = [
-        "a photo of a cat",
-        "a photo of a ship",
-        "a photo of a dog",
-        "a photo of a truck",
-        "a photo of an airplane",
-    ]
+    preview_object_names = ["cat", "ship", "dog", "truck", "airplane"]
 
     epoch_ids = []
     train_losses = []
@@ -451,6 +445,7 @@ def main():
             if (use_ema and args.use_ema_for_sampling)
             else (text_encoder._orig_mod if hasattr(text_encoder, "_orig_mod") else text_encoder)
         )
+        preview_prompts = [build_object_prompt(name) for name in preview_object_names]
         sampled = sample_ddpm(
             unet=sample_unet,
             text_encoder=sample_text_encoder,
@@ -477,6 +472,7 @@ def main():
             f"[epoch {epoch}] train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
             f"lr={optimizer.param_groups[0]['lr']:.6e} sample={sample_path} plot={plot_path}"
         )
+        print("preview_prompts:", preview_prompts)
 
         # In notebook environments (e.g., Colab), this displays the evolution graph and current sample.
         maybe_display_image(plot_path)
