@@ -10,6 +10,7 @@ It includes:
 - Training on COCO captions (default), with optional STL-10/CIFAR-10
 - Per-epoch validation evaluation and loss curve tracking
 - Per-epoch timestamped sample generations, checkpoints, and metrics logs
+- Advanced controls: warmup + cosine LR floor, configurable weight decay, EMA weights
 
 ## 1) Install
 
@@ -21,6 +22,12 @@ pip install -r requirements.txt
 
 ```bash
 python train.py --dataset coco --coco_split train --epochs 40 --batch_size 32 --val_batch_size 32 --timesteps 400 --image_size 64 --num_workers 8 --lr 1e-4 --device cuda --amp --compile_model --channels_last
+```
+
+Advanced control example:
+
+```bash
+python train.py --dataset coco --epochs 50 --batch_size 16 --val_batch_size 16 --lr 8e-5 --weight_decay 0.01 --warmup_epochs 3 --min_lr_ratio 0.05 --ema_decay 0.999 --timesteps 300 --image_size 96 --device cuda --amp --compile_model --channels_last
 ```
 
 Artifacts:

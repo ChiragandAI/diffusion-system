@@ -1,5 +1,7 @@
 import argparse
+import copy
 import csv
+import math
 import os
 from datetime import datetime
 from contextlib import nullcontext
@@ -25,6 +27,9 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--val_batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--min_lr_ratio", type=float, default=0.05, help="Minimum LR as a ratio of base LR for cosine decay.")
+    p.add_argument("--warmup_epochs", type=int, default=2, help="Linear LR warmup epochs before cosine decay.")
+    p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--timesteps", type=int, default=400)
     p.add_argument("--image_size", type=int, default=64)
     p.add_argument("--data_dir", type=str, default="./data")
@@ -38,6 +43,9 @@ def parse_args():
     p.add_argument("--text_hidden_dim", type=int, default=384)
     p.add_argument("--base_channels", type=int, default=96)
     p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--ema_decay", type=float, default=0.999, help="EMA decay for model weights (0 to disable).")
+    p.add_argument("--use_ema_for_sampling", action="store_true", default=True)
+    p.add_argument("--no-use_ema_for_sampling", action="store_false", dest="use_ema_for_sampling")
     p.add_argument("--preview_cfg_scale", type=float, default=6.0)
     p.add_argument("--amp", action="store_true", default=True, help="Enable automatic mixed precision on CUDA.")
     p.add_argument("--no-amp", action="store_false", dest="amp", help="Disable automatic mixed precision.")
@@ -127,6 +135,14 @@ def build_grad_scaler(device: str, use_amp: bool):
     return torch.cuda.amp.GradScaler(enabled=use_amp and device.startswith("cuda"))
 
 
+@torch.no_grad()
+def update_ema(ema_model: torch.nn.Module, model: torch.nn.Module, decay: float):
+    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+        ema_param.mul_(decay).add_(param, alpha=1.0 - decay)
+    for ema_buf, buf in zip(ema_model.buffers(), model.buffers()):
+        ema_buf.copy_(buf)
+
+
 def _sanitize_name(text: str) -> str:
     keep = []
     for ch in text:
@@ -214,14 +230,40 @@ def main():
     if args.channels_last and device.startswith("cuda"):
         unet = unet.to(memory_format=torch.channels_last)
 
+    use_ema = args.ema_decay > 0.0
+    ema_text_encoder = copy.deepcopy(text_encoder).to(device) if use_ema else None
+    ema_unet = copy.deepcopy(unet).to(device) if use_ema else None
+    if use_ema:
+        for p in ema_text_encoder.parameters():
+            p.requires_grad_(False)
+        for p in ema_unet.parameters():
+            p.requires_grad_(False)
+
     if args.compile_model and hasattr(torch, "compile"):
         unet = torch.compile(unet)
         text_encoder = torch.compile(text_encoder)
 
     scheduler = DiffusionScheduler(timesteps=args.timesteps, device=device)
 
-    optimizer = optim.AdamW(list(unet.parameters()) + list(text_encoder.parameters()), lr=args.lr)
-    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.1)
+    optimizer = optim.AdamW(
+        list(unet.parameters()) + list(text_encoder.parameters()),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+
+    warmup_epochs = max(0, args.warmup_epochs)
+    min_lr_ratio = max(0.0, min(1.0, args.min_lr_ratio))
+
+    def lr_lambda(epoch_idx: int):
+        if warmup_epochs > 0 and epoch_idx < warmup_epochs:
+            return max(1e-8, float(epoch_idx + 1) / float(warmup_epochs))
+        cosine_span = max(1, args.epochs - warmup_epochs)
+        progress = float(epoch_idx - warmup_epochs) / float(cosine_span)
+        progress = max(0.0, min(1.0, progress))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
+    lr_scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     use_amp = args.amp and device.startswith("cuda")
     scaler = build_grad_scaler(device, use_amp)
 
@@ -250,6 +292,9 @@ def main():
             lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
         if "scaler" in ckpt:
             scaler.load_state_dict(ckpt["scaler"])
+        if use_ema and "ema_unet" in ckpt and "ema_text_encoder" in ckpt:
+            ema_unet.load_state_dict(ckpt["ema_unet"])
+            ema_text_encoder.load_state_dict(ckpt["ema_text_encoder"])
 
         start_epoch = int(ckpt.get("epoch", 0)) + 1
         global_step = int(ckpt.get("global_step", 0))
@@ -323,6 +368,11 @@ def main():
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
+                if use_ema:
+                    train_unet = unet._orig_mod if hasattr(unet, "_orig_mod") else unet
+                    train_text_encoder = text_encoder._orig_mod if hasattr(text_encoder, "_orig_mod") else text_encoder
+                    update_ema(ema_unet, train_unet, args.ema_decay)
+                    update_ema(ema_text_encoder, train_text_encoder, args.ema_decay)
 
             running_loss += loss.item()
             global_step += 1
@@ -340,6 +390,11 @@ def main():
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
+            if use_ema:
+                train_unet = unet._orig_mod if hasattr(unet, "_orig_mod") else unet
+                train_text_encoder = text_encoder._orig_mod if hasattr(text_encoder, "_orig_mod") else text_encoder
+                update_ema(ema_unet, train_unet, args.ema_decay)
+                update_ema(ema_text_encoder, train_text_encoder, args.ema_decay)
 
         train_loss = running_loss / max(1, len(train_loader))
         val_loss = evaluate_val_loss(
@@ -365,6 +420,7 @@ def main():
             "optimizer": optimizer.state_dict(),
             "lr_scheduler": lr_scheduler.state_dict(),
             "scaler": scaler.state_dict(),
+            "ema_decay": args.ema_decay,
             "dataset": args.dataset,
             "coco_split": args.coco_split,
             "timesteps": args.timesteps,
@@ -383,12 +439,21 @@ def main():
             "train_losses": train_losses + [train_loss],
             "val_losses": val_losses + [val_loss],
         }
+        if use_ema:
+            ckpt["ema_unet"] = ema_unet.state_dict()
+            ckpt["ema_text_encoder"] = ema_text_encoder.state_dict()
         torch.save(ckpt, ckpt_path)
         torch.save(ckpt, os.path.join(run_dir, "last.pt"))
 
+        sample_unet = ema_unet if (use_ema and args.use_ema_for_sampling) else (unet._orig_mod if hasattr(unet, "_orig_mod") else unet)
+        sample_text_encoder = (
+            ema_text_encoder
+            if (use_ema and args.use_ema_for_sampling)
+            else (text_encoder._orig_mod if hasattr(text_encoder, "_orig_mod") else text_encoder)
+        )
         sampled = sample_ddpm(
-            unet=unet,
-            text_encoder=text_encoder,
+            unet=sample_unet,
+            text_encoder=sample_text_encoder,
             tokenizer=tokenizer,
             scheduler=scheduler,
             prompts=preview_prompts,

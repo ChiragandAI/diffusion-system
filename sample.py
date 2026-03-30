@@ -16,6 +16,8 @@ def parse_args():
     p.add_argument("--prompts", type=str, nargs="+", required=True)
     p.add_argument("--output", type=str, default=None, help="If omitted, saves inside checkpoint run folder.")
     p.add_argument("--cfg_scale", type=float, default=6.0)
+    p.add_argument("--use_ema", action="store_true", default=True, help="Use EMA weights from checkpoint if available.")
+    p.add_argument("--no-use_ema", action="store_false", dest="use_ema")
     p.add_argument("--amp", action="store_true", default=True)
     p.add_argument("--no-amp", action="store_false", dest="amp")
     p.add_argument("--channels_last", action="store_true", default=True)
@@ -69,6 +71,9 @@ def main():
 
     text_encoder.load_state_dict(ckpt["text_encoder"])
     unet.load_state_dict(ckpt["unet"])
+    if args.use_ema and "ema_text_encoder" in ckpt and "ema_unet" in ckpt:
+        text_encoder.load_state_dict(ckpt["ema_text_encoder"])
+        unet.load_state_dict(ckpt["ema_unet"])
 
     scheduler = DiffusionScheduler(timesteps=ckpt.get("timesteps", 300), device=device)
     image_size = ckpt.get("image_size", 32)
