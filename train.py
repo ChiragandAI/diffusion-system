@@ -128,32 +128,30 @@ def plot_losses(epochs, train_losses, val_losses, save_path: str):
     plt.close()
 
 
-def save_labeled_samples(samples: torch.Tensor, prompts, save_path: str, cols: int = 3):
+def save_labeled_samples(samples: torch.Tensor, prompts, save_path: str):
     samples = samples.detach().cpu().clamp(0, 1)
     n = samples.size(0)
-    rows = max(1, math.ceil(n / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 4 * rows))
+    rows = max(1, n)
+    fig, axes = plt.subplots(rows, 2, figsize=(9, 2.2 * rows), gridspec_kw={"width_ratios": [1.2, 2.2]})
 
-    if rows == 1 and cols == 1:
-        axes = [[axes]]
-    elif rows == 1:
+    if rows == 1:
         axes = [axes]
-    elif cols == 1:
-        axes = [[ax] for ax in axes]
 
-    idx = 0
-    for r in range(rows):
-        for c in range(cols):
-            ax = axes[r][c]
-            if idx < n:
-                img = samples[idx].permute(1, 2, 0).numpy()
-                ax.imshow(img)
-                ax.set_title(prompts[idx], fontsize=9, loc="left")
-            ax.axis("off")
-            idx += 1
+    for i in range(rows):
+        ax_text, ax_img = axes[i]
+        if i < n:
+            prompt = prompts[i]
+            img = samples[i].permute(1, 2, 0).numpy()
 
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=140)
+            ax_text.text(0.02, 0.5, prompt, fontsize=10, va="center", ha="left", wrap=True)
+            ax_text.set_xlim(0, 1)
+            ax_text.set_ylim(0, 1)
+            ax_img.imshow(img)
+        ax_text.axis("off")
+        ax_img.axis("off")
+
+    plt.tight_layout(pad=0.6)
+    plt.savefig(save_path, dpi=120)
     plt.close()
 
 
@@ -529,7 +527,7 @@ def main():
             prediction_target=args.prediction_target,
             device=device,
         )
-        save_labeled_samples(sampled, preview_prompts, sample_path, cols=min(3, len(preview_prompts)))
+        save_labeled_samples(sampled, preview_prompts, sample_path)
 
         epoch_ids.append(epoch)
         train_losses.append(train_loss)
